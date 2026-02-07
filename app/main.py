@@ -1,34 +1,34 @@
-import os, json, requests
+import os, json
 from fastapi import FastAPI
 from pydantic import BaseModel
 from dotenv import load_dotenv
 from typing import Optional
 
+from app.prompts import SYSTEM
+from app.ollama_manager import build_manager_from_env
 
 load_dotenv()
 
-OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434")
-MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
-
 app = FastAPI(title="LLM Planner")
+ollama = build_manager_from_env()
 
 class PlanRequest(BaseModel):
-    # minimal inputs for now
     car: str
     start: dict
     end: dict
-    candidates: list  # list of {algorithm, metrics, ...}
+    candidates: list
     conflicts_summary: Optional[dict] = None
 
-def call_ollama(prompt: str) -> str:
-    payload = {
-        "model": MODEL,
-        "prompt": prompt,
-        "stream": False
-    }
-    r = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=120)
-    r.raise_for_status()
-    return r.json()["response"]
+
+@app.on_event("startup")
+def _startup():
+    ollama.start_if_needed()
+    ollama.ensure_model(ollama.model)
+
+@app.on_event("shutdown")
+def _shutdown():
+  ollama.shutdown()
+
 
 @app.post("/plan")
 def plan(req: PlanRequest):
@@ -59,13 +59,11 @@ def plan(req: PlanRequest):
     }}
   }}
 }}
-"""
-    raw = call_ollama(prompt)
+""".strip()
 
-    # enforce JSON only
+    raw = ollama.generate(prompt=prompt, system=SYSTEM, timeout=120)
+
     try:
-        data = json.loads(raw)
+        return json.loads(raw)
     except Exception:
         return {"error": "LLM did not return valid JSON", "raw": raw}
-
-    return data
